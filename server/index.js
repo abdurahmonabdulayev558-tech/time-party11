@@ -1,0 +1,280 @@
+import express from 'express'
+import cors from 'cors'
+import Database from 'better-sqlite3'
+import { fileURLToPath } from 'node:url'
+import { dirname, join } from 'node:path'
+import { existsSync } from 'node:fs'
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
+const db = new Database(join(__dirname, 'data.db'))
+db.pragma('journal_mode = WAL')
+
+// ---------- Baza sxemasi ----------
+db.exec(`
+  CREATE TABLE IF NOT EXISTS parties (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    subtitle TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL DEFAULT '✨',
+    tone TEXT NOT NULL DEFAULT 'mint',
+    votes INTEGER NOT NULL DEFAULT 0,
+    sort INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS teachers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    subject TEXT NOT NULL DEFAULT '',
+    initials TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT 'purple',
+    rating REAL NOT NULL DEFAULT 0,
+    image TEXT NOT NULL DEFAULT '',
+    login TEXT NOT NULL DEFAULT '',
+    password TEXT NOT NULL DEFAULT ''
+  );
+  CREATE TABLE IF NOT EXISTS suggestions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    text TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT 'Anonim oquvchi',
+    group_name TEXT NOT NULL DEFAULT '',
+    teacher TEXT NOT NULL DEFAULT '',
+    votes INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'Yangi',
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS votes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    voter TEXT NOT NULL,
+    party TEXT NOT NULL,
+    teacher TEXT NOT NULL DEFAULT '',
+    voted_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS visitor_days (
+    date TEXT PRIMARY KEY,
+    count INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+`)
+
+// ---------- Boshlang'ich (seed) ma'lumotlar ----------
+const partyCount = db.prepare('SELECT COUNT(*) AS n FROM parties').get().n
+if (partyCount === 0) {
+  const insert = db.prepare('INSERT INTO parties (title, subtitle, icon, tone, votes, sort) VALUES (?, ?, ?, ?, ?, ?)')
+  insert.run('Pizza Party', 'Issiq, pishloqli va hammaga tanish', '🍕', 'coral', 0, 1)
+  insert.run('Fruit Party', 'Yangi mevalar va vitaminli kayfiyat', '🍓', 'mint', 0, 2)
+  insert.run('Movie Night', 'Film, popcorn va yaxshi suhbat', '▶', 'blue', 0, 3)
+}
+
+const teacherCount = db.prepare('SELECT COUNT(*) AS n FROM teachers').get().n
+if (teacherCount === 0) {
+  const insert = db.prepare('INSERT INTO teachers (name, subject, initials, color, rating, login, password) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  insert.run('Jasur Akmalov', 'IELTS Instructor', 'JA', 'blue', 4.9, 'jasur', 'jasur2026')
+  insert.run('Malika Raximova', 'General English', 'MR', 'orange', 4.8, 'malika', 'malika2026')
+  insert.run('Sobirov Sardor', 'Speaking Club', 'SS', 'green', 4.7, 'sardor', 'sardor2026')
+}
+
+const suggestionCount = db.prepare('SELECT COUNT(*) AS n FROM suggestions').get().n
+if (suggestionCount === 0) {
+  const insert = db.prepare('INSERT INTO suggestions (text, author, group_name, teacher, votes, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+  const now = Date.now()
+  insert.run('Burger party', 'Aziza Karimova', 'IELTS · 17:00', 'Jasur Akmalov', 0, 'Yangi', now)
+  insert.run('Karaoke kechasi', 'Bekzod Ismoilov', 'General English · 15:30', 'Malika Raximova', 0, 'Yangi', now)
+  insert.run('Sushi workshop', 'Madina Tojiboyeva', 'IELTS · 17:00', 'Jasur Akmalov', 0, 'Yangi', now)
+}
+
+if (!db.prepare('SELECT 1 FROM settings WHERE key = ?').get('voting_open')) {
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('voting_open', '1')
+}
+if (!db.prepare('SELECT 1 FROM settings WHERE key = ?').get('deadline')) {
+  const end = new Date()
+  end.setHours(20, 0, 0, 0)
+  if (end.getTime() <= Date.now()) end.setDate(end.getDate() + 1)
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('deadline', String(end.getTime()))
+}
+
+// ---------- Yordamchilar ----------
+const getSetting = (key, fallback = '') => {
+  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
+  return row ? row.value : fallback
+}
+const setSetting = (key, value) => {
+  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(key, String(value))
+}
+const initialsOf = (name) => name.split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase()
+
+const partyRow = (r) => ({ id: r.id, title: r.title, subtitle: r.subtitle, icon: r.icon, tone: r.tone, votes: r.votes })
+const teacherRow = (r) => ({ id: r.id, name: r.name, subject: r.subject, initials: r.initials, color: r.color, rating: r.rating, votes: 0, image: r.image || undefined, login: r.login, password: r.password })
+const suggestionRow = (r) => ({ id: r.id, text: r.text, author: r.author, group: r.group_name, teacher: r.teacher, votes: r.votes, status: r.status })
+const voteRow = (r) => ({ name: r.voter, party: r.party, teacher: r.teacher, time: r.voted_at })
+
+// ---------- App ----------
+const app = express()
+app.use(cors())
+app.use(express.json({ limit: '8mb' }))
+
+// Barcha ma'lumotlar bir marta olinadi
+app.get('/api/state', (req, res) => {
+  res.json({
+    parties: db.prepare('SELECT * FROM parties ORDER BY sort ASC, id ASC').all().map(partyRow),
+    teachers: db.prepare('SELECT * FROM teachers ORDER BY id ASC').all().map(teacherRow),
+    suggestions: db.prepare('SELECT * FROM suggestions ORDER BY created_at DESC').all().map(suggestionRow),
+    votes: db.prepare('SELECT * FROM votes ORDER BY voted_at DESC LIMIT 100').all().map(voteRow),
+    visitorDays: db.prepare('SELECT * FROM visitor_days ORDER BY date ASC').all(),
+    votingOpen: getSetting('voting_open', '1') === '1',
+    deadline: Number(getSetting('deadline', '0')),
+  })
+})
+
+// --- Party ---
+app.post('/api/parties/:id/vote', (req, res) => {
+  const id = Number(req.params.id)
+  const { voter, teacher } = req.body || {}
+  if (getSetting('voting_open', '1') !== '1') return res.status(400).json({ error: 'voting_closed' })
+  const party = db.prepare('SELECT * FROM parties WHERE id = ?').get(id)
+  if (!party) return res.status(404).json({ error: 'not_found' })
+  db.prepare('UPDATE parties SET votes = votes + 1 WHERE id = ?').run(id)
+  db.prepare('INSERT INTO votes (voter, party, teacher, voted_at) VALUES (?, ?, ?, ?)').run(voter || "O'quvchi", party.title, teacher || '', Date.now())
+  res.json({ ok: true })
+})
+
+app.post('/api/parties', (req, res) => {
+  const { title } = req.body || {}
+  if (!title) return res.status(400).json({ error: 'no_title' })
+  const maxSort = db.prepare('SELECT COALESCE(MAX(sort), 0) AS m FROM parties').get().m
+  const info = db.prepare('INSERT INTO parties (title, subtitle, icon, tone, votes, sort) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(title, "Admin tomonidan qo'shilgan party", '✨', 'mint', 0, maxSort + 1)
+  res.json({ id: info.lastInsertRowid })
+})
+
+app.post('/api/parties/reset', (req, res) => {
+  db.prepare('UPDATE parties SET votes = 0').run()
+  db.prepare('DELETE FROM votes').run()
+  setSetting('voting_open', '1')
+  res.json({ ok: true })
+})
+
+// --- Ovoz holati ---
+app.post('/api/settings/voting', (req, res) => {
+  setSetting('voting_open', req.body?.open ? '1' : '0')
+  res.json({ ok: true })
+})
+
+// --- Ustozlar ---
+app.post('/api/teachers', (req, res) => {
+  const b = req.body || {}
+  if (!b.name || !b.subject || !b.login || !b.password) return res.status(400).json({ error: 'missing_fields' })
+  try {
+    db.prepare('INSERT INTO teachers (name, subject, initials, color, rating, image, login, password) VALUES (?, ?, ?, ?, 0, ?, ?, ?)')
+      .run(b.name.trim(), b.subject.trim(), initialsOf(b.name.trim()), b.color || 'purple', b.image || '', b.login.trim(), b.password.trim())
+  } catch (e) {
+    return res.status(409).json({ error: 'exists' })
+  }
+  res.json({ ok: true })
+})
+
+app.put('/api/teachers/:id', (req, res) => {
+  const id = Number(req.params.id)
+  const b = req.body || {}
+  const cur = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id)
+  if (!cur) return res.status(404).json({ error: 'not_found' })
+  const name = (b.name ?? cur.name).trim()
+  const login = (b.login ?? cur.login).trim()
+  const password = (b.password ?? cur.password).trim()
+  if (!name || !login || !password) return res.status(400).json({ error: 'missing_fields' })
+  // Login boshqa ustozda band emasligini tekshiramiz
+  const clash = db.prepare('SELECT id FROM teachers WHERE lower(login) = lower(?) AND id != ?').get(login, id)
+  if (clash) return res.status(409).json({ error: 'login_taken' })
+  // Ism boshqa ustozda band emasligini tekshiramiz
+  const nameClash = db.prepare('SELECT id FROM teachers WHERE name = ? AND id != ?').get(name, id)
+  if (nameClash) return res.status(409).json({ error: 'name_taken' })
+  const oldName = cur.name
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE teachers SET name = ?, subject = ?, initials = ?, image = ?, login = ?, password = ? WHERE id = ?')
+      .run(name, (b.subject ?? cur.subject).trim(), initialsOf(name), b.image ?? cur.image, login, password, id)
+    // Ustoz ismi o'zgargan bo'lsa — eski ovozlar va takliflarni yangi ismga bog'laymiz,
+    // shunda ustoz panelida eski o'quvchilar/takliflar yo'qolib qolmaydi.
+    if (oldName && oldName !== name) {
+      db.prepare('UPDATE votes SET teacher = ? WHERE teacher = ?').run(name, oldName)
+      db.prepare('UPDATE suggestions SET teacher = ? WHERE teacher = ?').run(name, oldName)
+    }
+  })
+  tx()
+  res.json({ ok: true })
+})
+
+app.post('/api/teachers/:id/rate', (req, res) => {
+  const id = Number(req.params.id)
+  const value = Number(req.body?.value)
+  if (!(value >= 1 && value <= 5)) return res.status(400).json({ error: 'bad_value' })
+  db.prepare('UPDATE teachers SET rating = ? WHERE id = ?').run(value, id)
+  res.json({ ok: true })
+})
+
+app.post('/api/teachers/login', (req, res) => {
+  const { login, password } = req.body || {}
+  const row = db.prepare('SELECT * FROM teachers WHERE lower(login) = lower(?) AND password = ?').get((login || '').trim(), password)
+  if (!row) return res.status(401).json({ error: 'invalid' })
+  res.json({ teacher: teacherRow(row) })
+})
+
+// --- Takliflar ---
+app.post('/api/suggestions', (req, res) => {
+  const b = req.body || {}
+  if (!b.text || !b.teacher) return res.status(400).json({ error: 'missing_fields' })
+  db.prepare('INSERT INTO suggestions (text, author, group_name, teacher, votes, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(b.text.trim(), b.author || "Anonim o'quvchi", b.group || '', b.teacher, 0, 'Yangi', Date.now())
+  res.json({ ok: true })
+})
+
+// --- Tashrifchilar (kunlik) ---
+app.post('/api/visitors/hit', (req, res) => {
+  const { visitorId, date } = req.body || {}
+  if (!visitorId || !date) return res.status(400).json({ error: 'missing_fields' })
+  const key = 'seen_' + date + '_' + visitorId
+  if (getSetting(key, '') === '1') {
+    const day = db.prepare('SELECT count FROM visitor_days WHERE date = ?').get(date)
+    return res.json({ counted: false, count: day?.count || 0 })
+  }
+  setSetting(key, '1')
+  db.prepare('INSERT INTO visitor_days (date, count) VALUES (?, 1) ON CONFLICT(date) DO UPDATE SET count = count + 1').run(date)
+  const day = db.prepare('SELECT count FROM visitor_days WHERE date = ?').get(date)
+  res.json({ counted: true, count: day.count })
+})
+
+// Production'da backend frontend (dist) fayllarini ham bersin — bitta manzil, bitta host.
+// Buning uchun avval `npm run build` qilinishi kerak.
+const distDir = join(__dirname, '..', 'dist')
+if (existsSync(distDir)) {
+  app.use(express.static(distDir))
+  // SPA marshrutlari: /admin, /teacher va h.k. index.html ga qaytadi.
+  // (Express 5'da '*' yo'l ishlamaydi — regex ishlatamiz.)
+  app.get(/^(?!\/api).*/, (req, res) => {
+    res.sendFile(join(distDir, 'index.html'))
+  })
+}
+
+const PORT = Number(process.env.PORT) || 4000
+const server = app.listen(PORT, () => console.log(`Time Party → http://localhost:${PORT}`))
+
+// Port band bo'lsa yoki boshqa xato bo'lsa — aniq va tushunarli xabar beramiz.
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.error(`\n❌ ${PORT}-port band. Ehtimol eski server hali ishlab turibdi.`)
+    console.error('   Yechim: barcha eski node processlarini to\'xtatib, qayta urinib ko\'ring.\n')
+  } else {
+    console.error('\n❌ Server ishga tushmadi:', err.message, '\n')
+  }
+  process.exit(1)
+})
+
+// Toza to'xtash (Ctrl+C yoki boshqa signal).
+const shutdown = () => {
+  server.close(() => {
+    try { db.close() } catch { /* allaqachon yopilgan */ }
+    process.exit(0)
+  })
+}
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)

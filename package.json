@@ -4,8 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node scripts/dev.mjs",
+    "dev:web": "vite",
+    "dev:server": "node server/index.js",
     "build": "tsc -b && vite build",
+    "start": "npm run build && node server/index.js",
+    "install:all": "npm install && npm --prefix server install",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -18,6 +22,7 @@
   "devDependencies": {
     "@types/react": "latest",
     "@types/react-dom": "latest",
+    "concurrently": "^10.0.5",
     "typescript": "latest"
   }
 }

@@ -1,3 +1,12 @@
+# DIQQAT: Endi loyihada HAQIQIY backend (server/ papkasi, SQLite baza) bor.
+# Netlify faqat statik sayt joylaydi — backend'ni joylashtira olmaydi.
+# Shuning uchun to'liq (umiy) tizim uchun Node.js qo'llab-quvvatlaydigan host kerak
+# (Render, Railway, Fly.io, VPS va h.k.): u yerda `npm run start` ishga tushiriladi —
+# u avval frontend'ni build qiladi, keyin bitta serverda ham API, ham sahifani beradi.
+#
+# Bu fayl faqat FRONTEND'ni (statik) Netlify'ga qo'yish uchun qoladi.
+# Bunda backend boshqa hostda bo'lishi va VITE_API_URL shu hostga qaratilishi kerak.
+
 [build]
   command = "npm run build"
   publish = "dist"
