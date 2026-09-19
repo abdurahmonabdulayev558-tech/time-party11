@@ -115,3 +115,18 @@
 .admin-content .people-table .table-row:has(span:nth-child(4)) { grid-template-columns: 1.2fr 1.2fr 1fr .9fr; }
 .server-banner { position: relative; z-index: 3; max-width: 1280px; margin: 14px auto 0; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 13px 18px; border-radius: 14px; background: rgba(255,180,120,.35); color: #7a4a00; font-size: 12px; font-weight: 600; }
 .server-banner button { background: #171717; color: #ffd400; padding: 8px 12px; border-radius: 9px; font-size: 10px; font-weight: 800; white-space: nowrap; }
+/* Ovoz berish paneli — ism + ustoz tanlash */
+.vote-teacher-picker { display: flex; flex-direction: column; gap: 12px; margin: 0 0 16px; padding: 18px 20px; border-radius: 16px; }
+.vtp-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.vtp-fields label { display: flex; flex-direction: column; gap: 6px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.vtp-fields input, .vtp-fields select { border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.75); color: var(--ink); padding: 11px 13px; font-size: 13px; outline-color: #cda900; font-weight: 500; }
+.vtp-hint { font-size: 10px; }
+@media (max-width: 620px) { .vtp-fields { grid-template-columns: 1fr; } }
+
+/* Ustoz panelда party statistikasi */
+.teacher-party-stats { display: flex; flex-direction: column; gap: 12px; margin-top: 4px; }
+.teacher-party-row { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 8px; }
+.party-stat-name { font-size: 13px; font-weight: 600; }
+.party-stat-count { font-size: 12px; font-weight: 800; color: #9a7900; }
+.party-stat-bar { grid-column: 1 / -1; height: 8px; border-radius: 6px; background: rgba(23,23,23,.08); overflow: hidden; }
+.party-stat-bar span { display: block; height: 100%; min-width: 3px; border-radius: inherit; background: linear-gradient(90deg, #171717, #f0c400); }

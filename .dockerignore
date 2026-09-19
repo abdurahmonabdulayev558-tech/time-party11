@@ -1,10 +1,14 @@
 node_modules
-dist
 server/node_modules
+dist
+.git
+.gitignore
 server/data.db
 server/data.db-wal
 server/data.db-shm
-.env
-
-# Local Netlify folder
-.netlify
+*.mjs
+qa-*
+.vscode
+.kilo
+.qodo
+.vite

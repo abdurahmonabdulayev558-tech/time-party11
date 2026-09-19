@@ -1,18 +1,25 @@
-# DIQQAT: Endi loyihada HAQIQIY backend (server/ papkasi, SQLite baza) bor.
-# Netlify faqat statik sayt joylaydi — backend'ni joylashtira olmaydi.
-# Shuning uchun to'liq (umiy) tizim uchun Node.js qo'llab-quvvatlaydigan host kerak
-# (Render, Railway, Fly.io, VPS va h.k.): u yerda `npm run start` ishga tushiriladi —
-# u avval frontend'ni build qiladi, keyin bitta serverda ham API, ham sahifani beradi.
-#
-# Bu fayl faqat FRONTEND'ni (statik) Netlify'ga qo'yish uchun qoladi.
-# Bunda backend boshqa hostda bo'lishi va VITE_API_URL shu hostga qaratilishi kerak.
+# ============================================================
+#  ✅ NETLIFY'GA QO'YISH — TO'LIQ ISHLAYDI
+# ============================================================
+#  Backend Netlify Functions ko'rinishida (netlify/functions/api.mjs),
+#  baza esa Netlify Blobs'da saqlanadi (SQLite ishlatilmaydi).
+#  Barcha /api/* so'rovlari funksiyaga yo'naltiriladi.
+# ============================================================
 
 [build]
   command = "npm run build"
   publish = "dist"
 
+[functions]
+  directory = "netlify/functions"
+
+# /api/* so'rovlarini Netlify Function'ga yo'naltiradi (SPA redirect'dan OLDIN turishi kerak).
+[[redirects]]
+  from = "/api/*"
+  to = "/.netlify/functions/api/:splat"
+  status = 200
 # SPA (React) sayt uchun: barcha manzillarni index.html ga yo'naltiradi.
-# Shu tufayli /admin manzili ham ochiladi.
+# Shu tufayli /admin va /teacher manzillari ham ochiladi.
 [[redirects]]
   from = "/*"
   to = "/index.html"

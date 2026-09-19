@@ -40,8 +40,13 @@ npm run start
 ```
 
 Bu avval frontend'ni build qiladi, keyin bitta serverda (`http://localhost:4000`)
-ham sahifani, ham API'ni beradi. Deploy uchun shu buyruq ishlatiladi
-(Render, Railway, Fly.io, VPS va h.k. — Node.js qo'llab-quvvatlaydigan host).
+ham sahifani, ham API'ni beradi.
+
+## 🚀 Deploy
+> ⚠️ **Netlify'ga qo'yib bo'lmaydi!** Loyihada haqiqiy backend (Node.js + SQLite baza) bor,
+> Netlify esa faqat statik saytni joylaydi. **Render** yoki **Railway** kerak.
+>
+> Batafsil qo'llanma: **[DEPLOY.md](DEPLOY.md)**
 
 ## Kirish ma'lumotlari
 

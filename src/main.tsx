@@ -86,8 +86,10 @@ function App() {
   const [profileTeacher, setProfileTeacher] = useState<Teacher | null>(null)
   const [now, setNow] = useState(Date.now())
   const [visitorCount, setVisitorCount] = useState(0)
-  // Ovoz berishda o'quvchi tanlagan ustoz
+  // Ovoz berishda o'quvchi tanlagan ustoz va kiritgan ismi
   const [voteTeacher, setVoteTeacher] = useState('')
+  const [voteName, setVoteName] = useSavedState('time-school-student-name', '')
+  const [votedParty, setVotedParty] = useSavedState<string>('time-school-voted-party', '')
 
   // Bugungi sana kaliti (har kuni avtomatik yangilanadi)
   const todayKey = new Date().toISOString().slice(0, 10)
@@ -116,6 +118,35 @@ function App() {
 
   useEffect(() => { refresh() }, [refresh])
 
+  // REAL VAQT: har 4 sekundda serverdan yangi holatni olamiz.
+  // Shunday qilib boshqa qurilmalardagi o'zgarishlar (ovoz, ustoz, taklif)
+  // sahifani yangilamasdan ham ko'rinadi.
+  useEffect(() => {
+    const timer = window.setInterval(() => { refresh() }, 4000)
+    return () => window.clearInterval(timer)
+  }, [refresh])
+
+  // Sahifa ochilganda serverdan "men ovoz berdimmi" ni tekshiramiz.
+  // Shunda boshqa qurilmada/qayta kirganda ham holat to'g'ri tiklanadi.
+  useEffect(() => {
+    if (!serverReady) return
+    let cancelled = false
+    api.myVote(getVisitorId())
+      .then((r) => {
+        if (cancelled) return
+        if (r.voted && r.vote) {
+          setVoted(true)
+          setVotedParty(r.vote.party)
+          setVoteTeacher(r.vote.teacher)
+          const found = parties.find((p) => p.title === r.vote!.party)
+          if (found) setSelectedParty(found.id)
+        }
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverReady])
+
   // Bugungi kun ovozlari soni (serverdagi bugungi yozuvlardan hisoblanadi)
   const dailyVotes = useMemo(() => voteLog.filter((v) => new Date(v.time).toISOString().slice(0, 10) === todayKey).length, [voteLog, todayKey])
 
@@ -127,6 +158,22 @@ function App() {
       .catch(() => {})
     return () => { cancelled = true }
   }, [todayKey])
+
+  // "Men ovoz berdimmi" holatini ham vaqti-vaqti bilan yangilab turamiz.
+  useEffect(() => {
+    if (!serverReady) return
+    let cancelled = false
+    const sync = async () => {
+      try {
+        const r = await api.myVote(getVisitorId())
+        if (cancelled || !r.voted || !r.vote) return
+        setVoted(true)
+        setVotedParty(r.vote.party)
+      } catch { /* server vaqtincha javob bermadi */ }
+    }
+    const timer = window.setInterval(sync, 6000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [serverReady])
 
   useEffect(() => {
     const handleTeacherAction = (event: MouseEvent) => {
@@ -166,15 +213,23 @@ function App() {
   }, [seconds])
 
   const vote = async (id: number) => {
-    if (voted || !partyVotingOpen || !voteTeacher) return
+    if (voted || !partyVotingOpen || !voteTeacher || !voteName.trim()) return
     setSelectedParty(id)
-    setVoted(true)
     setShowSuccess(true)
+    const chosen = parties.find((p) => p.id === id)
     try {
-      await api.vote(id, 'O\'quvchi', voteTeacher)
+      await api.vote(id, voteName.trim(), voteTeacher, getVisitorId())
+      setVoted(true)
+      setVotedParty(chosen?.title || '')
       await refresh()
-    } catch {
-      setServerError('Ovozni saqlashda xatolik. Server ishlayaptimi?')
+    } catch (e) {
+      const code = (e as { code?: string }).code
+      if (code === 'already_voted') {
+        setVoted(true)
+        setServerError('Siz allaqachon ovoz bergansiz. Bir o\'quvchi faqat bir marta ovoz bera oladi.')
+      } else {
+        setServerError('Ovozni saqlashda xatolik. Server ishlayaptimi?')
+      }
     }
   }
 
@@ -226,7 +281,7 @@ function App() {
           ? <TeacherPanel teachers={teachers} teacherName={teacherPanelName} onSelectTeacher={setTeacherPanelName} suggestions={suggestions} voteLog={voteLog} teacherRatings={teacherRatings} onExit={() => { setIsTeacherAuthed(false); setMode('student'); window.history.pushState({}, '', '/') }} />
           : null
       ) : mode === 'student' ? (
-        <StudentView countdown={countdown} parties={parties} teachers={teachers} selectedParty={selectedParty} voted={voted} partyVotingOpen={partyVotingOpen} deadline={deadline} vote={vote} voteTeacher={voteTeacher} onVoteTeacher={setVoteTeacher} onSuggest={() => setShowSuggestion(true)} onRate={(name) => setSelectedTeacher(name)} onProfile={setProfileTeacher} teacherRatings={teacherRatings} teacherRated={teacherRated} />
+        <StudentView countdown={countdown} parties={parties} teachers={teachers} selectedParty={selectedParty} voted={voted} votedParty={votedParty} partyVotingOpen={partyVotingOpen} deadline={deadline} vote={vote} voteTeacher={voteTeacher} onVoteTeacher={setVoteTeacher} voteName={voteName} onVoteName={setVoteName} onSuggest={() => setShowSuggestion(true)} onRate={(name) => setSelectedTeacher(name)} onProfile={setProfileTeacher} teacherRatings={teacherRatings} teacherRated={teacherRated} />
       ) : (
         <><AdminView parties={parties} suggestions={suggestions} teachers={teachers} teacherRatings={teacherRatings} deadline={deadline} visitorCount={visitorCount} visitorHistory={visitorHistory} dailyVotes={dailyVotes} voteLog={voteLog} votingOpen={partyVotingOpen} onToggleVoting={() => setVotingState(!partyVotingOpen)} onResetVotes={async () => { try { await api.resetVotes() } catch { setServerError('Server xatosi.') }; setVoted(false); setSelectedParty(null); await refresh() }} onSetParty={async (text) => { try { await api.addParty(text) } catch { setServerError('Server xatosi.') }; await refresh() }} onAddTeacher={async (teacher) => { try { await api.addTeacher(teacher) } catch (e) { setServerError('Bu login band bo\'lishi mumkin.') }; await refresh() }} /><TeacherDiagram teachers={teachers} teacherRatings={teacherRatings} onEdit={setEditingTeacher} onRate={async (name, value) => { const t = teachers.find((x) => x.name === name); if (t) { try { await api.rateTeacher(t.id, value) } catch { setServerError('Server xatosi.') }; await refresh() } }} /><button className="logout-button" onClick={() => { setIsAdminAuthed(false); setMode('student'); window.history.pushState({}, '', '/') }}><LogOut size={15} /> Admin paneldan chiqish</button></>
       )}
@@ -281,17 +336,18 @@ function TeacherPanel({ teachers, teacherName, onSelectTeacher, suggestions, vot
   // Faqat shu ustoz tanlangan ovozlar ko'rinadi
   const myVotes = voteLog.filter((entry) => entry.teacher === current.name)
   const myVoters = myVotes.length
-  return <div className="content teacher-panel"><div className="teacher-panel-head glass-panel"><div className="teacher-avatar profile-avatar">{current.image ? <img src={current.image} alt="" /> : current.initials}</div><div><p className="eyebrow">O'QITUVCHI PANELI</p><h1>{current.name}</h1><small className="muted">{current.subject}</small></div><button className="logout-button" onClick={onExit}><LogOut size={15} /> Chiqish</button></div><section className="stats-grid"><div className="stat-card glass-panel"><div className="stat-icon yellow"><Star size={18} /></div><small>Mening reytingim</small><strong>{myRating ? myRating.toFixed(1) : '0.0'}</strong></div><div className="stat-card glass-panel"><div className="stat-icon blue"><Lightbulb size={18} /></div><small>O'quvchilar takliflari</small><strong>{mySuggestions.length}</strong></div><div className="stat-card glass-panel"><div className="stat-icon coral"><Vote size={18} /></div><small>Jami ovozlar</small><strong>{myVoters}</strong></div></section><section className="dashboard-card glass-panel submissions"><div className="section-head compact"><div><p className="eyebrow">O'QUVCHILARIM</p><h2>Taklif bergan o'quvchilar</h2></div><Lightbulb size={18} /></div>{mySuggestions.length === 0 ? <p className="muted notif-empty">Hozircha o'quvchilar taklif bermagan.</p> : <div className="people-table">{mySuggestions.map((item) => <div className="table-row suggestion-table" key={item.text}><span><div className="small-avatar">{item.author.split(' ').map((x) => x[0]).join('').slice(0, 2)}</div><strong>{item.author}</strong></span><span><Lightbulb size={14} /> {item.text}</span><small className="muted">{item.status}</small></div>)}</div>}</section><section className="dashboard-card glass-panel submissions"><div className="section-head compact"><div><p className="eyebrow">OVOZ BERGANLAR</p><h2>Meni tanlagan o'quvchilar</h2></div><Vote size={18} /></div>{myVotes.length === 0 ? <p className="muted notif-empty">Hozircha sizni tanlagan o'quvchi yo'q.</p> : <div className="people-table">{myVotes.slice(0, 20).map((entry) => <div className="table-row" key={entry.time}><span><div className="small-avatar">{entry.name.split(' ').map((x) => x[0]).join('').slice(0, 2)}</div><strong>{entry.name}</strong></span><span>{entry.party}</span><span className="muted">{new Intl.DateTimeFormat('uz-UZ', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(entry.time)}</span></div>)}</div>}</section></div>
+  return <div className="content teacher-panel"><div className="teacher-panel-head glass-panel"><div className="teacher-avatar profile-avatar">{current.image ? <img src={current.image} alt="" /> : current.initials}</div><div><p className="eyebrow">O'QITUVCHI PANELI</p><h1>{current.name}</h1><small className="muted">{current.subject}</small></div><button className="logout-button" onClick={onExit}><LogOut size={15} /> Chiqish</button></div><section className="stats-grid"><div className="stat-card glass-panel"><div className="stat-icon yellow"><Star size={18} /></div><small>Mening reytingim</small><strong>{myRating ? myRating.toFixed(1) : '0.0'}</strong></div><div className="stat-card glass-panel"><div className="stat-icon blue"><Lightbulb size={18} /></div><small>O'quvchilar takliflari</small><strong>{mySuggestions.length}</strong></div><div className="stat-card glass-panel"><div className="stat-icon coral"><Vote size={18} /></div><small>Meni tanlagan o'quvchilar</small><strong>{myVoters} ta</strong></div></section><section className="dashboard-card glass-panel"><div className="section-head compact"><div><p className="eyebrow">PARTY'LAR BO'YICHA</p><h2>Qaysi party'ga ovoz berilgan</h2></div><Vote size={18} /></div>{myVotes.length === 0 ? <p className="muted notif-empty">Hozircha ovoz yo'q.</p> : <div className="teacher-party-stats">{[...new Set(myVotes.map((v) => v.party))].map((partyName) => { const count = myVotes.filter((v) => v.party === partyName).length; return <div className="teacher-party-row" key={partyName}><span className="party-stat-name">🎉 {partyName}</span><span className="party-stat-count">{count} ta ovoz</span><div className="party-stat-bar"><span style={{ width: `${Math.round(count / myVotes.length * 100)}%` }} /></div></div> })}</div>}</section><section className="dashboard-card glass-panel submissions"><div className="section-head compact"><div><p className="eyebrow">O'QUVCHILARIM</p><h2>Taklif bergan o'quvchilar</h2></div><Lightbulb size={18} /></div>{mySuggestions.length === 0 ? <p className="muted notif-empty">Hozircha o'quvchilar taklif bermagan.</p> : <div className="people-table">{mySuggestions.map((item) => <div className="table-row suggestion-table" key={item.text}><span><div className="small-avatar">{item.author.split(' ').map((x) => x[0]).join('').slice(0, 2)}</div><strong>{item.author}</strong></span><span><Lightbulb size={14} /> {item.text}</span><small className="muted">{item.status}</small></div>)}</div>}</section><section className="dashboard-card glass-panel submissions"><div className="section-head compact"><div><p className="eyebrow">MENI TANLAGAN O'QUVCHILAR</p><h2>Kim qaysi party'ga ovoz berdi</h2></div><Vote size={18} /></div>{myVotes.length === 0 ? <p className="muted notif-empty">Hozircha sizni tanlagan o'quvchi yo'q.</p> : <div className="people-table"><div className="table-row table-head"><span>O'quvchi (ismi)</span><span>Ovoz bergan party</span><span>Vaqti</span></div>{myVotes.map((entry) => <div className="table-row" key={entry.time}><span><div className="small-avatar">{entry.name.split(' ').map((x) => x[0]).join('').slice(0, 2)}</div><strong>{entry.name}</strong></span><span>🎉 {entry.party}</span><span className="muted">{new Intl.DateTimeFormat('uz-UZ', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).format(entry.time)}</span></div>)}</div>}</section></div>
 }
 
-function StudentView({ countdown, parties, teachers, selectedParty, voted, partyVotingOpen, deadline, vote, voteTeacher, onVoteTeacher, onSuggest, onRate, onProfile, teacherRatings, teacherRated }: { countdown: number[]; parties: Party[]; teachers: Teacher[]; selectedParty: number | null; voted: boolean; partyVotingOpen: boolean; deadline: number; vote: (id: number) => void; voteTeacher: string; onVoteTeacher: (name: string) => void; onSuggest: () => void; onRate: (name: string) => void; onProfile: (teacher: Teacher) => void; teacherRatings: Record<string, number>; teacherRated: boolean }) {
+function StudentView({ countdown, parties, teachers, selectedParty, voted, votedParty, partyVotingOpen, deadline, vote, voteTeacher, onVoteTeacher, voteName, onVoteName, onSuggest, onRate, onProfile, teacherRatings, teacherRated }: { countdown: number[]; parties: Party[]; teachers: Teacher[]; selectedParty: number | null; voted: boolean; votedParty: string; partyVotingOpen: boolean; deadline: number; vote: (id: number) => void; voteTeacher: string; onVoteTeacher: (name: string) => void; voteName: string; onVoteName: (value: string) => void; onSuggest: () => void; onRate: (name: string) => void; onProfile: (teacher: Teacher) => void; teacherRatings: Record<string, number>; teacherRated: boolean }) {
   const rankedTeachers = [...teachers].sort((first, second) => (teacherRatings[second.name] || second.rating || 0) - (teacherRatings[first.name] || first.rating || 0))
   return <div className="content student-content">
     <section className="hero-row"><div><p className="eyebrow"><span className="live-dot" /> TIME PARTY · MAYDON</p><h1>Keyingi party'ni<br /><em>birgalikda tanlaymiz.</em></h1><p className="hero-copy">Sizning ovozingiz markazimizdagi keyingi unutilmas kunni yaratadi.</p></div><div className="next-event glass-panel"><div className="event-head"><span><CalendarDays size={15} /> Ovoz berish yopilishigacha</span><span className="pill-live">LIVE</span></div><div className="countdown">{countdown.map((value, i) => <div className="time-cell" key={i}><strong>{String(value).padStart(2, '0')}</strong><small>{['KUN', 'SOAT', 'MIN', 'SEK'][i]}</small></div>)}</div><div className="progress"><span /></div><small className="muted">{new Intl.DateTimeFormat('uz-UZ', { day: 'numeric', month: 'long' }).format(deadline)} · 20:00 da yakunlanadi</small></div></section>
     <section className="section-head"><div><p className="eyebrow">OVOZ BERISH</p><h2>Qaysi biri bo'lsin?</h2></div><span className="vote-count"><Users size={15} /> {voted ? `${parties.reduce((a, b) => a + b.votes, 0)} ta ovoz` : 'Natija ovoz berilgandan keyin'}</span></section>
     {!partyVotingOpen && <div className="closed-banner glass-panel"><Check size={17} /><span><strong>Ovoz berish yopildi</strong><small>Sizning tanlovingiz qabul qilindi. Keyingi ovoz berish yangi party bilan ochiladi.</small></span></div>}
-    {!voted && partyVotingOpen && <div className="vote-teacher-picker glass-panel"><div><p className="eyebrow">QAYSI USTOZ BILAN?</p><strong>Avval o'qituvchingizni tanlang</strong><small className="muted">Tanlagan ustozingiz keyingi party taklifini tayyorlaydi.</small></div><select value={voteTeacher} onChange={(e) => onVoteTeacher(e.target.value)}><option value="">O'qituvchini tanlang</option>{teachers.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.subject}</option>)}</select></div>}
-    <section className={`party-grid ${(!partyVotingOpen || voted) ? 'voting-closed' : ''}`}>{parties.map((party, index) => <button disabled={!partyVotingOpen || voted || !voteTeacher} className={`party-card ${party.tone} ${selectedParty === party.id ? 'chosen' : ''}`} key={party.id} onClick={() => vote(party.id)}><div className="party-top"><span className="party-number">0{index + 1}</span><span className="party-icon">{party.icon}</span>{selectedParty === party.id && <span className="chosen-mark"><Check size={14} /></span>}</div><div className="party-info"><h3>{party.title}</h3><p>{party.subtitle}</p></div><div className="party-foot"><span>{voted ? `${party.votes} ta ovoz` : 'Natija yopiq'}</span><span>{voted && selectedParty === party.id ? 'Siz ovoz berdingiz' : (voteTeacher ? 'Ovoz berish' : 'Avval ustozni tanlang')} <ArrowRight size={15} /></span></div><div className="party-line"><span style={{ width: voted ? `${party.votes}%` : '0%' }} /></div></button>)}</section>
+    {!voted && partyVotingOpen && <div className="vote-teacher-picker glass-panel"><div className="vtp-fields"><label>Ismingiz<input value={voteName} onChange={(e) => onVoteName(e.target.value)} placeholder="Masalan: Ali Valiyev" /></label><label>Qaysi o'qituvchi?<select value={voteTeacher} onChange={(e) => onVoteTeacher(e.target.value)}><option value="">O'qituvchini tanlang</option>{teachers.map((item) => <option key={item.name} value={item.name}>{item.name} · {item.subject}</option>)}</select></label></div><small className="muted vtp-hint">Ismingizni yozing va ustozni tanlang, so'ng party'ga ovoz bering. Bir o'quvchi faqat bir marta ovoz beradi.</small></div>}
+    {voted && votedParty && <div className="closed-banner glass-panel"><Check size={17} /><span><strong>Siz "{votedParty}" uchun ovoz berdingiz</strong><small>Bir o'quvchi faqat bir marta ovoz bera oladi.</small></span></div>}
+    <section className={`party-grid ${(!partyVotingOpen || voted) ? 'voting-closed' : ''}`}>{parties.map((party, index) => <button disabled={!partyVotingOpen || voted || !voteTeacher || !voteName.trim()} className={`party-card ${party.tone} ${selectedParty === party.id ? 'chosen' : ''}`} key={party.id} onClick={() => vote(party.id)}><div className="party-top"><span className="party-number">0{index + 1}</span><span className="party-icon">{party.icon}</span>{selectedParty === party.id && <span className="chosen-mark"><Check size={14} /></span>}</div><div className="party-info"><h3>{party.title}</h3><p>{party.subtitle}</p></div><div className="party-foot"><span>{voted ? `${party.votes} ta ovoz` : 'Natija yopiq'}</span><span>{voted && selectedParty === party.id ? 'Siz ovoz berdingiz' : (!voteName.trim() ? 'Avval ismingizni yozing' : !voteTeacher ? 'Ustozni tanlang' : 'Ovoz berish')} <ArrowRight size={15} /></span></div><div className="party-line"><span style={{ width: voted ? `${party.votes}%` : '0%' }} /></div></button>)}</section>
     <button className="suggest-card glass-panel" onClick={onSuggest}><span className="suggest-icon"><Plus size={20} /></span><span><strong>O'zingiz taklif qiling</strong><small>Ro'yxatda yo'q boshqa g'oya bormi?</small></span><ArrowRight size={18} /></button>
     <section className="below-grid"><div className="section-block rating-block"><div className="section-head compact"><div><p className="eyebrow">TOP O'QITUVCHILAR</p><h2>Ustozlar reytingi</h2></div><Trophy size={20} className="gold" /></div><p className="muted">Eng yuqori reyting avtomatik birinchi o'ringa chiqadi.</p><div className="top-teachers">{rankedTeachers.map((teacher, index) => { const score = teacherRatings[teacher.name] || teacher.rating || 0; const medal = ['🥇', '🥈', '🥉'][index] || `0${index + 1}`; return <div className={`teacher-row top-${index + 1}`} key={teacher.name}><span className="rank-medal">{medal}</span><button className="profile-open" onClick={() => onProfile(teacher)} aria-label={`${teacher.name} profili`}><div className="teacher-avatar">{teacher.image ? <img src={teacher.image} alt="" /> : teacher.initials}</div><div><strong>{teacher.name}</strong><small>{teacher.subject} · {score.toFixed(1)} ★</small></div></button><button disabled={teacherRated} className="star-button" onClick={() => onRate(teacher.name)}><Star size={17} fill={teacherRatings[teacher.name] ? 'currentColor' : 'none'} /></button></div> })}</div></div></section>
   </div>

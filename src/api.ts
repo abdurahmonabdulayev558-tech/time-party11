@@ -23,7 +23,7 @@ async function request(path: string, options?: RequestInit) {
 export type ApiParty = { id: number; title: string; subtitle: string; icon: string; tone: string; votes: number }
 export type ApiSuggestion = { text: string; author: string; group: string; teacher: string; votes: number; status: string }
 export type ApiTeacher = { id: number; name: string; subject: string; initials: string; color: string; rating: number; votes: number; image?: string; login?: string; password?: string }
-export type ApiVote = { name: string; party: string; teacher: string; time: number }
+export type ApiVote = { name: string; party: string; teacher: string; time: number; voterId?: string }
 export type ApiVisitorDay = { date: string; count: number }
 
 export type ApiState = {
@@ -39,8 +39,11 @@ export type ApiState = {
 export const api = {
   state: (): Promise<ApiState> => request('/state'),
 
-  vote: (id: number, voter: string, teacher: string) =>
-    request(`/parties/${id}/vote`, { method: 'POST', body: JSON.stringify({ voter, teacher }) }),
+  vote: (id: number, voter: string, teacher: string, voterId: string) =>
+    request(`/parties/${id}/vote`, { method: 'POST', body: JSON.stringify({ voter, teacher, voterId }) }),
+
+  myVote: (voterId: string): Promise<{ voted: boolean; vote: ApiVote | null }> =>
+    request(`/votes/mine/${encodeURIComponent(voterId)}`),
 
   addParty: (title: string) =>
     request('/parties', { method: 'POST', body: JSON.stringify({ title }) }),

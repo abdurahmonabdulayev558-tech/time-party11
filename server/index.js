@@ -3,10 +3,15 @@ import cors from 'cors'
 import Database from 'better-sqlite3'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
-const db = new Database(join(__dirname, 'data.db'))
+// Baza joylashuvi: serverda DATA_DIR bo'lsa o'sha yer (masalan Render'ning doimiy diski),
+// aks holda server papkasi yonida (lokal ishlatish uchun).
+const dataDir = process.env.DATA_DIR || __dirname
+// Papka mavjud bo'lmasa yaratamiz (masalan Fly.io'da /data).
+if (!existsSync(dataDir)) mkdirSync(dataDir, { recursive: true })
+const db = new Database(join(dataDir, 'data.db'))
 db.pragma('journal_mode = WAL')
 
 // ---------- Baza sxemasi ----------
@@ -44,6 +49,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS votes (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     voter TEXT NOT NULL,
+    voter_id TEXT NOT NULL DEFAULT '',
     party TEXT NOT NULL,
     teacher TEXT NOT NULL DEFAULT '',
     voted_at INTEGER NOT NULL
@@ -84,17 +90,14 @@ if (suggestionCount === 0) {
   insert.run('Sushi workshop', 'Madina Tojiboyeva', 'IELTS · 17:00', 'Jasur Akmalov', 0, 'Yangi', now)
 }
 
-if (!db.prepare('SELECT 1 FROM settings WHERE key = ?').get('voting_open')) {
-  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('voting_open', '1')
-}
-if (!db.prepare('SELECT 1 FROM settings WHERE key = ?').get('deadline')) {
+// ---------- Yordamchilar ----------
+// Har kuni soat 20:00 da ovoz berish yakunlanadi (kunlik yangilanadi)
+function getTodayDeadlineMs() {
   const end = new Date()
   end.setHours(20, 0, 0, 0)
   if (end.getTime() <= Date.now()) end.setDate(end.getDate() + 1)
-  db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run('deadline', String(end.getTime()))
+  return end.getTime()
 }
-
-// ---------- Yordamchilar ----------
 const getSetting = (key, fallback = '') => {
   const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key)
   return row ? row.value : fallback
@@ -104,10 +107,17 @@ const setSetting = (key, value) => {
 }
 const initialsOf = (name) => name.split(' ').map((p) => p[0]).join('').slice(0, 2).toUpperCase()
 
+if (!getSetting('voting_open', '')) {
+  setSetting('voting_open', '1')
+}
+if (!getSetting('deadline', '')) {
+  setSetting('deadline', getTodayDeadlineMs())
+}
+
 const partyRow = (r) => ({ id: r.id, title: r.title, subtitle: r.subtitle, icon: r.icon, tone: r.tone, votes: r.votes })
 const teacherRow = (r) => ({ id: r.id, name: r.name, subject: r.subject, initials: r.initials, color: r.color, rating: r.rating, votes: 0, image: r.image || undefined, login: r.login, password: r.password })
 const suggestionRow = (r) => ({ id: r.id, text: r.text, author: r.author, group: r.group_name, teacher: r.teacher, votes: r.votes, status: r.status })
-const voteRow = (r) => ({ name: r.voter, party: r.party, teacher: r.teacher, time: r.voted_at })
+const voteRow = (r) => ({ name: r.voter, party: r.party, teacher: r.teacher, time: r.voted_at, voterId: r.voter_id })
 
 // ---------- App ----------
 const app = express()
@@ -116,6 +126,9 @@ app.use(express.json({ limit: '8mb' }))
 
 // Barcha ma'lumotlar bir marta olinadi
 app.get('/api/state', (req, res) => {
+  // Muddat o'tgan bo'lsa — yangi kunga avtomatik o'tadi (real vaqt).
+  const storedDeadline = Number(getSetting('deadline', '0'))
+  if (storedDeadline <= Date.now()) setSetting('deadline', String(getTodayDeadlineMs()))
   res.json({
     parties: db.prepare('SELECT * FROM parties ORDER BY sort ASC, id ASC').all().map(partyRow),
     teachers: db.prepare('SELECT * FROM teachers ORDER BY id ASC').all().map(teacherRow),
@@ -130,13 +143,26 @@ app.get('/api/state', (req, res) => {
 // --- Party ---
 app.post('/api/parties/:id/vote', (req, res) => {
   const id = Number(req.params.id)
-  const { voter, teacher } = req.body || {}
+  const { voter, teacher, voterId } = req.body || {}
   if (getSetting('voting_open', '1') !== '1') return res.status(400).json({ error: 'voting_closed' })
+  if (!voterId) return res.status(400).json({ error: 'no_voter_id' })
+  if (!teacher) return res.status(400).json({ error: 'no_teacher' })
   const party = db.prepare('SELECT * FROM parties WHERE id = ?').get(id)
   if (!party) return res.status(404).json({ error: 'not_found' })
-  db.prepare('UPDATE parties SET votes = votes + 1 WHERE id = ?').run(id)
-  db.prepare('INSERT INTO votes (voter, party, teacher, voted_at) VALUES (?, ?, ?, ?)').run(voter || "O'quvchi", party.title, teacher || '', Date.now())
+  const already = db.prepare('SELECT id FROM votes WHERE voter_id = ?').get(voterId)
+  if (already) return res.status(409).json({ error: 'already_voted' })
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE parties SET votes = votes + 1 WHERE id = ?').run(id)
+    db.prepare('INSERT INTO votes (voter, voter_id, party, teacher, voted_at) VALUES (?, ?, ?, ?, ?)').run((voter || "O'quvchi").trim(), voterId, party.title, teacher, Date.now())
+  })
+  tx()
   res.json({ ok: true })
+})
+
+// Bitta o'quvchining ovozini bilish (qaytgan o'quvchi uchun)
+app.get('/api/votes/mine/:voterId', (req, res) => {
+  const row = db.prepare('SELECT * FROM votes WHERE voter_id = ?').get(req.params.voterId)
+  res.json({ voted: !!row, vote: row ? voteRow(row) : null })
 })
 
 app.post('/api/parties', (req, res) => {
@@ -151,7 +177,11 @@ app.post('/api/parties', (req, res) => {
 app.post('/api/parties/reset', (req, res) => {
   db.prepare('UPDATE parties SET votes = 0').run()
   db.prepare('DELETE FROM votes').run()
+  db.prepare('DELETE FROM suggestions').run()
+  db.prepare('DELETE FROM visitor_days').run()
+  db.prepare("DELETE FROM settings WHERE key LIKE 'seen_%'").run()
   setSetting('voting_open', '1')
+  setSetting('deadline', String(getTodayDeadlineMs()))
   res.json({ ok: true })
 })
 
@@ -247,7 +277,14 @@ app.post('/api/visitors/hit', (req, res) => {
 // Buning uchun avval `npm run build` qilinishi kerak.
 const distDir = join(__dirname, '..', 'dist')
 if (existsSync(distDir)) {
-  app.use(express.static(distDir))
+  // Keshlanishni oldini olamiz — brauzer har doim eng yangi kodni oladi.
+  app.use(express.static(distDir, {
+    etag: false,
+    lastModified: false,
+    setHeaders: (res) => {
+      res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate')
+    },
+  }))
   // SPA marshrutlari: /admin, /teacher va h.k. index.html ga qaytadi.
   // (Express 5'da '*' yo'l ishlamaydi — regex ishlatamiz.)
   app.get(/^(?!\/api).*/, (req, res) => {
